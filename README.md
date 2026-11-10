@@ -139,3 +139,7 @@ Run `/reload` after each edit.
 - **Scroll, not select.** A jump moves the chat viewport. It does not place the
   cursor in the input or rewind context, so everything after the chosen turn stays
   in view below it.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
