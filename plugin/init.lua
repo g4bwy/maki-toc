@@ -16,7 +16,7 @@ local MARKER_EXPANDED = "▾"
 local MARKER_NONE = " "
 local EMPTY_LABEL = "no turns yet"
 local NOT_MAIN = "Contents tracks the main transcript"
-local NO_JUMP_API = "this maki build lacks the transcript outline api"
+local NO_JUMP_API = "maki-toc needs maki PR 1155 (transcript outline api)"
 local NAV_KEYS = { "<M-j>", "<M-k>", "<M-CR>", "<M-Up>", "<M-Down>", "<M-o>" }
 
 local pane = nil

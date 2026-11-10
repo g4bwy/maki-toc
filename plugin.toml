@@ -1,0 +1,18 @@
+# maki package manifest. See https://maki.sh/docs/packages/
+# A package keeps only what this file names.
+
+min_maki_version = "0.7.1"
+
+# No floor above 0.7.1 is set on purpose: the transcript outline APIs this pane
+# needs are still an open pull request upstream (tontinton/maki#1155), not a
+# release, so a higher floor would skip the plugin even on a build that carries
+# that branch. The README states what is required, and the plugin checks at open
+# time.
+
+[permissions]
+# The pane reads no conversation of its own: it draws the outline maki publishes
+# through maki.ui.transcript_outline(). But it rebuilds on TurnStart and ToolDone,
+# and maki counts the content fields of an event as conversation content. Without
+# this key it leaves them out of the event table and says so in the status bar on
+# someone else's behalf.
+session_read = true
