@@ -2,7 +2,9 @@
 --
 -- A left split lists every user turn; folding one open shows its thinking
 -- and reply blocks. Clicking or pressing M-CR scrolls the chat to the
--- picked block; clicking the marker folds. Needs a maki build with
+-- picked block; clicking the marker folds. The pane pins the session it was
+-- opened in, so a refresh that lands while another tab is focused still
+-- lists its own transcript. Needs a maki build with
 -- maki.ui.transcript_outline, maki.ui.scroll_to_block and window click
 -- events (win:recv type "click").
 
@@ -15,31 +17,37 @@ local MARKER_COLLAPSED = "▸"
 local MARKER_EXPANDED = "▾"
 local MARKER_NONE = " "
 local EMPTY_LABEL = "no turns yet"
-local NOT_MAIN = "Contents tracks the main transcript"
 local NO_JUMP_API = "maki-toc needs maki PR 1155 (transcript outline api)"
 local NAV_KEYS = { "<M-j>", "<M-k>", "<M-CR>", "<M-Up>", "<M-Down>", "<M-o>" }
 
+-- Kinds this pane knows how to place in the tree. The host may publish more
+-- later, and an entry of an unknown kind is skipped rather than listed as a
+-- row that jumps somewhere unexplained.
+local TURN_KIND = "turn"
+local SUB_KINDS = { thinking = true, reply = true }
+
 local pane = nil
+local rebuild
 
 -- The outline call already filtered to jumpable blocks and ranked them in
 -- display order; grouping is all that is left. A turn opens a group, the
--- thinking and reply entries that follow join it. Each row keeps the
--- position its entry had in the outline, the one address
--- maki.ui.scroll_to_block takes, so nothing has to be counted here.
-local function build_turns()
-  local items, err = maki.ui.transcript_outline()
+-- thinking and reply entries that follow join it. Each row keeps the id of
+-- its entry, the one address maki.ui.scroll_to_block takes, so a jump lands
+-- on the block the row was listed for even after the transcript moved on.
+local function build_turns(session)
+  local items, err = maki.ui.transcript_outline({ session = session })
   if not items then
     return nil, err
   end
   local turns = {}
-  for pos, item in ipairs(items) do
-    if item.kind == "turn" then
-      turns[#turns + 1] = { text = item.text, pos = pos, blocks = {}, kind_seen = {} }
-    elseif #turns > 0 then
+  for _, item in ipairs(items) do
+    if item.kind == TURN_KIND then
+      turns[#turns + 1] = { text = item.text, id = item.id, blocks = {}, kind_seen = {} }
+    elseif SUB_KINDS[item.kind] and #turns > 0 then
       local turn = turns[#turns]
       turn.kind_seen[item.kind] = (turn.kind_seen[item.kind] or 0) + 1
       turn.blocks[#turn.blocks + 1] = {
-        pos = pos,
+        id = item.id,
         label = item.kind .. " " .. turn.kind_seen[item.kind],
       }
     end
@@ -71,12 +79,12 @@ local function render(p)
   local lines, row_map, row_headers = {}, {}, {}
   local text_width = p.width - COL_PREFIX_W
   for n, turn in ipairs(p.turns) do
-    local expanded = p.expanded[n]
+    local expanded = p.expanded[turn.id]
     local marker = MARKER_NONE
     if #turn.blocks > 0 then
       marker = expanded and MARKER_EXPANDED or MARKER_COLLAPSED
     end
-    row_map[#lines + 1] = { pos = turn.pos, turn = n }
+    row_map[#lines + 1] = { id = turn.id, turn = n }
     row_headers[#lines + 1] = true
     lines[#lines + 1] = {
       { string.format("%" .. NUM_W .. "d ", n), "tool" },
@@ -85,7 +93,7 @@ local function render(p)
     }
     if expanded then
       for _, b in ipairs(turn.blocks) do
-        row_map[#lines + 1] = { pos = b.pos, turn = n }
+        row_map[#lines + 1] = { id = b.id, turn = n }
         lines[#lines + 1] = { { SUB_PREFIX .. b.label, "dim" } }
       end
     end
@@ -96,7 +104,7 @@ local function render(p)
 end
 
 local function entry_key(e)
-  return "p" .. e.pos
+  return "i" .. e.id
 end
 
 local function row_of_key(p, key)
@@ -129,13 +137,12 @@ local function clamp_cursor(p)
 end
 
 local function jump(p, e)
-  if p.task ~= "main" then
-    maki.ui.flash(NOT_MAIN)
-    return
-  end
-  local ok, err = maki.ui.scroll_to_block(e.pos)
+  local ok, err = maki.ui.scroll_to_block(e.id, { session = p.session })
   if not ok then
+    -- The message behind the row is gone, by a rewind or by a chat switch in
+    -- the tab. List again so the next click has a row that answers.
     maki.ui.flash(err)
+    rebuild()
   end
 end
 
@@ -149,8 +156,11 @@ local function move(p, delta)
   p.win:set_cursor(p.cursor)
 end
 
+-- Folded by message id rather than by turn number, so a rewind that drops an
+-- earlier turn leaves the folds on the turns they belong to.
 local function toggle_turn(p, n)
-  p.expanded[n] = not p.expanded[n] or nil
+  local id = p.turns[n].id
+  p.expanded[id] = not p.expanded[id] or nil
   render(p)
   clamp_cursor(p)
 end
@@ -198,12 +208,12 @@ local function loop(p)
   end
 end
 
-local function rebuild()
+function rebuild()
   local p = pane
   if not p or not p.win:is_open() then
     return
   end
-  local turns, err = build_turns()
+  local turns, err = build_turns(p.session)
   if not turns then
     maki.ui.flash(err)
     return
@@ -218,23 +228,25 @@ local function open()
     maki.ui.flash(NO_JUMP_API)
     return
   end
+  local session = maki.session.current()
   local p = {
     buf = maki.ui.buf({ scratch = true }),
+    session = session,
     turns = {},
     row_map = {},
     row_headers = {},
     expanded = {},
     width = PANE_WIDTH,
-    task = "main",
     cursor_turn = 1,
   }
-  local turns, err = build_turns()
+  local turns, err = build_turns(session)
   if not turns then
     maki.ui.flash(err)
     return
   end
   p.turns = turns
   p.win = maki.ui.open_win(p.buf, {
+    session = session,
     title = TITLE,
     split = "left",
     width = PANE_WIDTH,
@@ -270,13 +282,14 @@ maki.api.register_command({
 })
 
 local function dump()
-  local items, err = maki.ui.transcript_outline()
+  local session = pane and pane.session or nil
+  local items, err = maki.ui.transcript_outline({ session = session })
   if not items then
     maki.log.error("toc dump: " .. tostring(err))
     return
   end
-  for i, item in ipairs(items) do
-    maki.log.info(string.format("toc dump: %d %s %q", i, item.kind, item.text))
+  for _, item in ipairs(items) do
+    maki.log.info(string.format("toc dump: %d %s %q", item.id, item.kind, item.text))
   end
   maki.log.info("toc dump: " .. #items .. " jumpable blocks")
   maki.ui.flash("toc: outline dumped to log")
@@ -290,43 +303,19 @@ maki.api.register_command({
 
 maki.keymap.set("n", "<M-t>", toggle, { desc = "Toggle contents pane" })
 
-maki.api.create_autocmd({ "TurnStart", "TurnEnd", "ToolDone" }, {
-  callback = function()
-    if pane then
-      maki.async.run(rebuild)
-    end
-  end,
-})
-
-maki.api.create_autocmd("CompactionDone", {
-  callback = function()
-    if not pane then
-      return
-    end
-    pane.expanded = {}
-    pane.cursor_turn = 1
-    pane.cursor_key = nil
-    maki.async.run(rebuild)
-  end,
-})
-
-maki.api.create_autocmd({ "SessionFocusChanged", "SessionReset" }, {
-  callback = function()
-    if not pane then
-      return
-    end
-    pane.task = "main"
-    pane.cursor_turn = 1
-    pane.cursor_key = nil
-    pane.expanded = {}
-    maki.async.run(rebuild)
-  end,
-})
-
-maki.api.create_autocmd("TaskFocusChanged", {
-  callback = function(ev)
-    if pane then
-      pane.task = ev.data.id
-    end
-  end,
-})
+-- The outline answers for whichever chat the pane's tab shows, and rows are
+-- keyed by the id of the message they were listed for, so a refresh keeps the
+-- folds and the selection where they were. A chat cycle and a compaction are
+-- reasons to list again. Nothing is needed when another tab takes the focus:
+-- the host hides this window with its session, and the pane reads that
+-- session by id either way.
+maki.api.create_autocmd(
+  { "TurnStart", "TurnEnd", "ToolDone", "TaskFocusChanged", "CompactionDone" },
+  {
+    callback = function()
+      if pane then
+        maki.async.run(rebuild)
+      end
+    end,
+  }
+)

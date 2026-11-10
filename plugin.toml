@@ -10,9 +10,10 @@ min_maki_version = "0.7.1"
 # time.
 
 [permissions]
-# The pane reads no conversation of its own: it draws the outline maki publishes
-# through maki.ui.transcript_outline(). But it rebuilds on TurnStart and ToolDone,
-# and maki counts the content fields of an event as conversation content. Without
-# this key it leaves them out of the event table and says so in the status bar on
-# someone else's behalf.
+# The pane draws its tree from maki.ui.transcript_outline(), which returns the
+# first line of every jumpable block, so maki guards it with session_read. The
+# pane also rebuilds on TurnStart, TurnEnd and ToolDone, and maki counts the
+# content fields of an event as conversation content. Without this key it leaves
+# those fields out of the event table and says so in the status bar on someone
+# else's behalf.
 session_read = true

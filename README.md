@@ -31,8 +31,8 @@ plugin checks at open time and flashes
 
 | Call | What it gives the pane | Source in that change |
 |------|------------------------|------------------------|
-| `maki.ui.transcript_outline()` | The jumpable blocks of the transcript, in the order the chat lists them, with first-line previews. | `maki-lua/src/api/ui/mod.rs` |
-| `maki.ui.scroll_to_block(position)` | A jump to the position-th entry of that outline. | `maki-lua/src/api/ui/mod.rs` |
+| `maki.ui.transcript_outline({ session })` | The jumpable blocks of one session's transcript, in the order the chat lists them, each with a message id and a first-line preview. | `maki-lua/src/api/ui/mod.rs` |
+| `maki.ui.scroll_to_block(id, { session })` | A jump to the block that id names, or an error when that message is gone. | `maki-lua/src/api/ui/mod.rs` |
 | `win:recv` click events | `{ type = "click", row, col }` for a painted line. | `maki-lua/src/api/ui/win.rs` |
 
 Until 1155 merges, build a maki that carries it:
@@ -52,7 +52,9 @@ run when a jump lands in the wrong place.
 ## Usage
 
 Toggle the pane with `/toc` or `Alt+t`. Open it once. It lists the turns of the
-current session and follows the transcript as it grows.
+current session and follows the transcript as it grows. It keeps that session's
+turns while you work in another tab, and it re-lists when its tab moves to a
+sub-agent chat.
 
 | Action | Mouse | Keyboard |
 |--------|-------|----------|
@@ -79,18 +81,16 @@ in the wrong place.
 
 | Key | Used by |
 |-----|---------|
-| `session_read` | Nothing the pane draws. It rebuilds on `TurnStart` and `ToolDone`, and maki counts the content fields of an event (`data.text`, `data.input`) as conversation content, so a subscriber without this key gets those fields withheld and a line in the status bar saying so. |
+| `session_read` | `maki.ui.transcript_outline`, because its previews are conversation text. The pane also rebuilds on `TurnStart`, `TurnEnd` and `ToolDone`, and maki counts the content fields of an event (`data.text`, `data.input`) as conversation content, so a subscriber without this key gets those fields withheld and a line in the status bar saying so. |
 
-Every call the pane actually makes is open by default:
-`maki.ui.transcript_outline()`, `maki.ui.scroll_to_block()`, `maki.ui.buf()`,
-`maki.ui.open_win()`, `maki.ui.flash()`, and `maki.keymap.set()`. The outline is
-the list maki publishes to the chat, not a transcript the plugin reads, and the
-plugin never calls `maki.session.messages()`.
+The rest is open by default: `maki.ui.scroll_to_block()`, `maki.ui.buf()`,
+`maki.ui.open_win()`, `maki.ui.flash()`, and `maki.keymap.set()`. The plugin reads
+no session file of its own and never calls `maki.session.messages()`.
 
 ## Layout
 
 ```text
-plugin.toml        the one permission, for the events the pane listens to
+plugin.toml        the one permission, for the outline and the events
 plugin/init.lua    the grouping, the pane, the jump
 screenshot.png     the cover image
 README.md
@@ -98,17 +98,27 @@ README.md
 
 ## How it works
 
-The tree comes from `maki.ui.transcript_outline()`. That call returns exactly the
-blocks the chat jumps to, each with its position. The plugin only groups: every
-`turn` entry opens a row, and the `thinking` and `reply` entries that follow
-become its children. Each row carries the position of its entry, which is the one
-address `maki.ui.scroll_to_block(position)` takes. Whether a message shows at all
-is the host's decision alone, so the pane and the chat cannot disagree about what
-a position means.
+The tree comes from `maki.ui.transcript_outline({ session = ... })`, which returns
+exactly the blocks the chat jumps to. The plugin only groups: every `turn` entry
+opens a row, and the `thinking` and `reply` entries that follow become its
+children. An entry of a kind the pane does not know is skipped, so a host that
+starts listing more blocks never puts a mystery row in the tree.
+
+Each row carries the id of its entry, and `maki.ui.scroll_to_block(id)` names that
+one message. An id does not move when the transcript grows, when a rewind drops
+later turns, or when the tab switches to another chat, so a row never jumps to a
+block that merely sits where the row was listed. When the host answers an error the
+pane flashes it and lists again, so the next click has a row that lands.
+
+The pane pins the session it was opened in. A rebuild that arrives while another
+tab is focused reads its own transcript, and a jump moves that tab's chat rather
+than whichever tab the user reached last.
 
 Rows are numbered in transcript order. Tool calls stay out of the outline to keep
-it short. The pane rebuilds on `TurnStart`, `TurnEnd`, and `ToolDone`, and resets
-on `/new`, on a session switch, and on compaction, when turn numbers move.
+it short. The pane rebuilds on `TurnStart`, `TurnEnd`, `ToolDone`,
+`TaskFocusChanged` and `CompactionDone`, and it keeps its folds and its selection
+through every one of them, because rows are keyed by message id rather than by
+position.
 
 ## Update, disable, remove
 
@@ -132,8 +142,9 @@ Run `/reload` after each edit.
 
 ## Limits
 
-- **Main transcript only.** While you view a sub-agent chat, a jump flashes a
-  note instead of scrolling the wrong transcript.
+- **One chat at a time.** The pane lists whichever chat its tab shows. Switch to
+  a sub-agent chat and the next rebuild lists that chat. A row left over from the
+  chat you came from answers an error, and the pane lists again.
 - **Sub-items appear at turn end.** Maki publishes thinking and reply blocks when
   a turn completes, so a running turn lists its header first.
 - **Scroll, not select.** A jump moves the chat viewport. It does not place the
